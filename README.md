@@ -1,307 +1,409 @@
-# 🛍️ The Zudio Incident — Part A + Part B: Bugs Fixed + Architecture Redesign
+# Swiggy Scale Simulation & Incident Architecture
 
-## 📖 Overview
+A deep-dive Site Reliability Engineering (SRE) case study that analyzes how a Swiggy-like food delivery platform would behave during a massive traffic spike triggered by a World Cup Final promotion, and how to redesign the system to survive 10 million concurrent users.
 
-This project simulates a real-world production incident in the backend of a fast-fashion e-commerce platform similar to Zudio.
+> Scenario: India vs Pakistan World Cup Final, 8 PM IST.  
+> 50% discount notification sent to 180 million users.  
+> 10+ million users attempt to order simultaneously.  
+> Existing backend: Single Node.js server + Single PostgreSQL database.  
+> Question: Can it survive? If not, what architecture should replace it?
 
-The repository contains:
-
-* Production bug investigation and remediation
-* Security vulnerability fixes
-* Performance optimization and benchmarking
-* Database redesign and normalization
-* Scalable cloud architecture design
-* Complete API contract documentation
-
-The goal was to analyze a broken Node.js + PostgreSQL backend, identify critical production issues, fix them systematically, and redesign the system to support large-scale traffic.
+Source material: :contentReference[oaicite:0]{index=0} :contentReference[oaicite:1]{index=1}
 
 ---
 
-## 🚨 Incident Scenario
-
-At 11 PM on a Friday night, multiple production issues were reported:
-
-* Payment endpoint returning random 500 errors
-* SQL Injection vulnerability exposing sensitive data
-* Order history endpoint taking 14+ seconds to load
-* Discount coupons applied multiple times
-* Product stock not decrementing after purchases
-* Passwords stored in plaintext
-
-The objective was to investigate, profile, fix, verify, and redesign the system.
-
----
-
-# ✅ Part A — Production Refactor & Bug Fixes
-
-## Bugs Identified and Fixed
-
-| # | Bug                                   | Category    | Severity |
-| - | ------------------------------------- | ----------- | -------- |
-| 1 | SQL Injection in Product Search       | Security    | Critical |
-| 2 | Plaintext Password Storage            | Security    | Critical |
-| 3 | Double Coupon Application             | Logic       | High     |
-| 4 | Stock Not Decrementing After Checkout | Logic       | High     |
-| 5 | N+1 Query in Order History            | Performance | High     |
-
----
-
-## Security Improvements
-
-### SQL Injection Prevention
-
-**Before**
-
-```sql
-SELECT * FROM products
-WHERE name LIKE '%${search}%'
-```
-
-**After**
-
-```sql
-SELECT * FROM products
-WHERE name ILIKE $1
-```
-
-Implemented parameterized PostgreSQL queries throughout the application.
-
----
-
-### Password Hashing
-
-Added bcrypt password hashing with secure salt rounds.
-
-```javascript
-const hashedPassword = await bcrypt.hash(password, 12);
-```
-
-Passwords are no longer stored in plaintext.
-
----
-
-## Logic Fixes
-
-### Coupon Race Condition
-
-Implemented atomic coupon validation and usage tracking using PostgreSQL transactional updates.
-
-### Inventory Synchronization
-
-Added stock decrement logic within checkout transactions to ensure inventory consistency.
-
----
-
-## Performance Improvements
-
-### Order History Optimization
-
-Replaced N+1 query pattern with optimized JOIN queries.
-
-**Before**
-
-* 200+ Queries
-* ~14 seconds response time
-
-**After**
-
-* 1–2 Queries
-* <500ms response time
-
----
-
-## Verification
-
-All fixes were manually verified through endpoint testing and profiling.
-
-| Feature                   | Status |
-| ------------------------- | ------ |
-| SQL Injection Protection  | ✅      |
-| Password Hashing          | ✅      |
-| Coupon Protection         | ✅      |
-| Stock Updates             | ✅      |
-| Order History Performance | ✅      |
-
----
-
-# 🏗️ Part B — Architecture Redesign
-
-## Objective
-
-Redesign the backend architecture to support large-scale traffic while maintaining performance, reliability, and security.
-
-Target scale:
-
-* 100,000+ concurrent users
-* High checkout throughput
-* Fault tolerance
-* Read-heavy traffic optimization
-
----
-
-## Proposed Architecture
-
-### Infrastructure Components
-
-* CDN for static assets and product images
-* Application Load Balancer
-* Multiple Stateless Node.js Instances
-* Redis Cluster
-* PostgreSQL Primary Database
-* PostgreSQL Read Replicas
-* Connection Pooling
-* Transaction-based Checkout System
-
----
-
-## Architecture Improvements
-
-### Redis Cache
-
-Added for:
-
-* Product catalog caching
-* Coupon locking
-* Reduced database load
-
-### Read Replicas
-
-Added for:
-
-* Product browsing
-* Order history queries
-
-### Load Balancer
-
-Added to eliminate the single point of failure and distribute traffic across instances.
-
----
-
-# 🗄️ Database Redesign
-
-Implemented:
-
-* Fully normalized schema
-* Foreign key constraints
-* NOT NULL constraints
-* CHECK constraints
-* Composite indexes
-* Transaction-safe operations
-
-Example:
-
-```sql
-CHECK (stock >= 0)
-CHECK (quantity > 0)
-CHECK (total >= 0)
+## Repository Structure
+
+```text
+swiggy-scale/
+│
+├── README.md
+│
+├── docs/
+│   ├── FAILURE-CASCADE.md
+│   ├── ARCHITECTURE.md
+│   ├── COST-ESTIMATE.md
+│   └── RUNBOOK.md
+│
+└── assets/
 ```
 
 ---
 
-# 📑 API Documentation
+## Project Objective
 
-Comprehensive REST API contracts were created covering:
+This repository demonstrates:
 
-* Authentication
-* Products
-* Cart
-* Checkout
-* Orders
-* Coupons
+- Failure cascade analysis under extreme load
+- Capacity planning using real infrastructure numbers
+- High-scale architecture design
+- AWS cost estimation
+- Production incident response procedures
 
-Each endpoint includes:
+The goal is not to build code.
 
-* Request schema
-* Success responses
-* Error responses
-* Validation rules
-* Authentication requirements
+The goal is to answer:
+
+> "If 10 million users arrive at once, what breaks first, why does it break, how much does it cost, and how do we prevent it?"
 
 ---
 
-# 📊 Benchmark Results
+## Scenario Overview
 
-## Optimization Implemented
+### Existing Production System
 
-Order History Query Optimization
+```text
+Users
+  │
+  ▼
+Node.js Express
+(1 CPU, 4GB RAM)
+  │
+  ▼
+PostgreSQL
+(max_connections = 100)
+```
 
-| Metric        | Before | After  |
-| ------------- | ------ | ------ |
-| Response Time | ~14s   | <500ms |
-| Query Count   | 200+   | 1–2    |
-| Database Load | High   | Low    |
+Characteristics:
+
+- Single Node.js process
+- Single PostgreSQL instance
+- No Redis
+- No CDN
+- No Load Balancer
+- No Auto Scaling
+- Synchronous payment processing
+- Images served directly from application server
 
 ---
 
-# 🛠️ Tech Stack
+## Traffic Simulation
 
-### Backend
+### Notification Blast
 
-* Node.js
-* Express.js
+```text
+Notification recipients      = 180,000,000
+CTR                           = 8%
 
-### Database
+Users opening app            = 14,400,000
+```
 
-* PostgreSQL
+### API Activity
 
-### Caching
+Each user performs:
 
-* Redis
+1. Browse restaurants
+2. Open restaurant
+3. Place order
 
-### Security
+```text
+3 API calls/user
+```
 
-* bcrypt
-* Parameterized SQL Queries
+### Peak RPS
+
+```text
+Peak RPS =
+(10,000,000 × 3) / 60
+
+= 500,000 requests/sec
+```
+
+---
+
+## Key Findings
+
+### 1. PostgreSQL Dies First
+
+```text
+max_connections = 100
+```
+
+Synchronous payment calls hold database connections for up to:
+
+```text
+200ms – 2000ms
+```
+
+Connection pool exhaustion occurs within seconds.
+
+---
+
+### 2. Node.js Is Asked To Handle 41× Capacity
+
+```text
+Node capacity ≈ 12,000 RPS
+
+Traffic demand ≈ 500,000 RPS
+```
+
+Result:
+
+```text
+500,000 / 12,000
+
+≈ 41x overload
+```
+
+---
+
+### 3. Payment Calls Amplify Failure
+
+Every payment request:
+
+```text
+DB connection
+    +
+External API wait
+```
+
+This dramatically increases connection hold time and exhausts PostgreSQL far earlier than expected.
+
+---
+
+### 4. Promo Code Logic Overspends Budget
+
+Classic race condition:
+
+```text
+SELECT promo
+UPDATE promo
+```
+
+Under massive concurrency:
+
+```text
+Millions validated
+Before first updates commit
+```
+
+Result:
+
+- Oversold discounts
+- Revenue loss
+- Customer disputes
+
+---
+
+### 5. Images Alone Can Kill The Server
+
+```text
+10M users
+× 20 images
+× 200 KB
+```
+
+≈ 40 TB of transfer in one minute.
+
+Without a CDN:
+
+```text
+Node.js NIC saturates
+Before APIs finish loading
+```
+
+---
+
+## Documents Included
+
+| Document | Description |
+|-----------|-------------|
+| FAILURE-CASCADE.md | Complete incident simulation with traffic math, component limits, trigger points, and timeline |
+| ARCHITECTURE.md | Redesigned multi-tier architecture capable of handling event-scale traffic |
+| COST-ESTIMATE.md | AWS pricing model including baseline and World Cup peak scaling |
+| RUNBOOK.md | Production incident runbook for on-call engineers |
+
+---
+
+## Architecture Overview
+
+The redesigned platform introduces:
+
+```text
+CloudFront CDN
+        │
+        ▼
+Application Load Balancer
+        │
+        ▼
+Node.js Auto-Scaling Fleet
+        │
+        ▼
+Redis Cluster
+        │
+        ▼
+PgBouncer
+        │
+        ▼
+PostgreSQL Primary
+        │
+        ├── Read Replica 1
+        └── Read Replica 2
+
+SQS Payment Queue
+        │
+        ▼
+Payment Workers
+```
+
+### What Changes?
+
+| Problem | Solution |
+|----------|----------|
+| Image traffic overload | CloudFront CDN |
+| Single server failure | Load Balancer + Auto Scaling |
+| DB connection exhaustion | Redis + PgBouncer |
+| Payment latency | SQS asynchronous processing |
+| Read/write contention | PostgreSQL replicas |
+| Promo race condition | Redis atomic locking |
+
+---
+
+## Cost Summary
+
+### Baseline Infrastructure
+
+Approximate monthly cost:
+
+```text
+~$1,024/month
+```
+
+Includes:
+
+- EC2
+- RDS
+- Read Replicas
+- Redis Cluster
+- CloudFront
+- ALB
+- SQS
+
+---
+
+### Peak Event Scaling
+
+Additional cost for a 4-hour World Cup Final event:
+
+```text
+~$455
+```
+
+---
+
+### Cost vs Outage
+
+Estimated business loss:
+
+```text
+₹4.2 crore/minute
+```
+
+45-minute outage:
+
+```text
+₹189 crore
+```
+
+Infrastructure cost:
+
+```text
+~$1,024/month
+```
+
+Conclusion:
+
+```text
+Infrastructure is dramatically cheaper
+than downtime.
+```
+
+---
+
+## Technologies Covered
+
+### Application Layer
+
+- Node.js
+- Express.js
+
+### Data Layer
+
+- PostgreSQL
+- Read Replicas
+- PgBouncer
+
+### Cache Layer
+
+- Redis
+- ElastiCache
+
+### Messaging
+
+- Amazon SQS
 
 ### Infrastructure
 
-* AWS Architecture Design
-* Load Balancing
-* Read Replicas
-* CDN
+- EC2
+- ALB
+- CloudFront
+- CloudWatch
+- Auto Scaling Groups
+
+### Reliability Engineering
+
+- Capacity Planning
+- Failure Analysis
+- Incident Response
+- Cost Optimization
+- Runbook Design
 
 ---
 
-# 📂 Repository Structure
+## Expected Learning Outcomes
+
+After reading this repository you should be able to:
+
+- Calculate peak traffic loads
+- Predict failure cascades
+- Identify infrastructure bottlenecks
+- Design scalable distributed systems
+- Estimate AWS operating costs
+- Write production-grade runbooks
+- Justify architecture decisions with numbers
+
+---
+
+## Final Takeaway
+
+The most important lesson is:
+
+> Systems do not fail randomly. They fail at their bottlenecks.
+
+In this scenario:
 
 ```text
-.
-├── src/
-├── migrations/
-├── seeds/
-├── part-b/
-│   ├── ARCHITECTURE.md
-│   ├── SCHEMA.md
-│   ├── API-CONTRACTS.md
-│   └── BENCHMARK.md
-├── AUDIT.md
-└── README.md
+100 PostgreSQL connections
++
+Synchronous payment calls
++
+500,000 RPS demand
 ```
 
----
+creates an unavoidable cascade:
 
-# 🎯 Learning Outcomes
+```text
+DB Pool Exhaustion
+        ↓
+Request Queueing
+        ↓
+Node Saturation
+        ↓
+Timeouts
+        ↓
+Process Crash
+        ↓
+Revenue Loss
+```
 
-This project demonstrates:
-
-* Production debugging
-* Incident analysis
-* Secure coding practices
-* Database optimization
-* Query performance tuning
-* Architecture scalability design
-* Reliability engineering concepts
-
----
-
-## PR Title
-
-**The Zudio Incident — Part A + Part B: Bugs Fixed + Architecture Redesign**
-
----
-
-### Author
-
-Rahul B
-
-Production Engineering • Backend Development • System Design
+The redesigned architecture removes each bottleneck individually and replaces a fragile monolith with a resilient, horizontally scalable platform capable of surviving major sporting-event traffic spikes.
