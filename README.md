@@ -1,18 +1,213 @@
-# Swiggy Scale Simulation & Incident Architecture
+<div align="center">
 
-A deep-dive Site Reliability Engineering (SRE) case study that analyzes how a Swiggy-like food delivery platform would behave during a massive traffic spike triggered by a World Cup Final promotion, and how to redesign the system to survive 10 million concurrent users.
+<img src="assets/image.png" alt="Swiggy Scale Simulation Banner" width="100%">
 
-> Scenario: India vs Pakistan World Cup Final, 8 PM IST.  
-> 50% discount notification sent to 180 million users.  
-> 10+ million users attempt to order simultaneously.  
-> Existing backend: Single Node.js server + Single PostgreSQL database.  
-> Question: Can it survive? If not, what architecture should replace it?
+# 🚀 Swiggy Scale Simulation
 
-Source material: :contentReference[oaicite:0]{index=0} :contentReference[oaicite:1]{index=1}
+### From Monolith Meltdown to 10 Million Users at Scale
+
+**Failure Cascade Analysis • Scalable Architecture • AWS Cost Estimation • Incident Runbook**
+
+
+
+</div>
 
 ---
 
-## Repository Structure
+# 📖 Overview
+
+This repository is a comprehensive **Site Reliability Engineering (SRE)** and **System Design** case study that analyzes how a Swiggy-like food delivery platform behaves under extreme traffic conditions and how to redesign the system to survive massive scale.
+
+The project simulates a real-world scenario:
+
+> **India vs Pakistan World Cup Final**
+>
+> Swiggy launches a **50% OFF promotion** to its entire user base.
+>
+> **180 million notifications** are delivered.
+>
+> **10 million users** attempt to order simultaneously.
+>
+> The backend consists of:
+>
+> - Single Node.js server
+> - Single PostgreSQL database
+> - No cache
+> - No CDN
+> - No Load Balancer
+> - Synchronous payments
+
+The goal is to determine:
+
+- What breaks first?
+- Why does it break?
+- What is the financial impact?
+- How should the architecture be redesigned?
+- What would the new infrastructure cost?
+- How should engineers respond during the incident?
+
+---
+
+# 🎯 Project Objectives
+
+This repository demonstrates:
+
+- Failure Cascade Analysis
+- Capacity Planning
+- Distributed System Design
+- Cloud Architecture Design
+- AWS Cost Estimation
+- Incident Response Engineering
+- Production Runbook Creation
+
+---
+
+# 📊 Traffic Simulation
+
+### Promotion Blast
+
+```text
+Notification Recipients: 180,000,000
+Click Through Rate:      8%
+Active Users:            14,400,000
+```
+
+### User Behaviour
+
+Each user performs approximately:
+
+```text
+GET /restaurants
+GET /restaurant/:id
+POST /orders
+```
+
+Average:
+
+```text
+3 API requests per user
+```
+
+### Peak Request Rate
+
+```text
+Peak RPS =
+(10,000,000 × 3) / 60
+
+= 500,000 Requests/Second
+```
+
+---
+
+# 🚨 Key Findings
+
+## 1. PostgreSQL Dies First
+
+The database is configured as:
+
+```text
+max_connections = 100
+```
+
+Synchronous payment processing holds connections for:
+
+```text
+200ms – 2000ms
+```
+
+The connection pool is exhausted within seconds.
+
+---
+
+## 2. Node.js Is Overloaded by 41×
+
+Single server capacity:
+
+```text
+≈ 12,000 RPS
+```
+
+Traffic demand:
+
+```text
+≈ 500,000 RPS
+```
+
+Result:
+
+```text
+500,000 / 12,000
+
+≈ 41x overload
+```
+
+---
+
+## 3. Payment Calls Amplify Failure
+
+Each order:
+
+```text
+Acquire DB Connection
+↓
+Call Payment Gateway
+↓
+Wait 200–2000ms
+↓
+Release Connection
+```
+
+This dramatically reduces effective throughput.
+
+---
+
+## 4. Promo Code Race Condition
+
+Current flow:
+
+```text
+SELECT promo
+UPDATE promo
+```
+
+Under heavy concurrency:
+
+```text
+Millions validated
+Before updates commit
+```
+
+Result:
+
+- Promo oversubscription
+- Revenue leakage
+- Customer complaints
+
+---
+
+## 5. Images Can Crash The Platform
+
+Without a CDN:
+
+```text
+10M users
+× 20 images
+× 200 KB
+```
+
+Produces:
+
+```text
+≈ 40 TB
+```
+
+of image traffic in the first minute.
+
+The application server becomes network-bound before processing business requests.
+
+---
+
+# 📂 Repository Structure
 
 ```text
 swiggy-scale/
@@ -26,314 +221,180 @@ swiggy-scale/
 │   └── RUNBOOK.md
 │
 └── assets/
+    └── image.png
 ```
 
 ---
 
-## Project Objective
+# 📚 Documentation
 
-This repository demonstrates:
-
-- Failure cascade analysis under extreme load
-- Capacity planning using real infrastructure numbers
-- High-scale architecture design
-- AWS cost estimation
-- Production incident response procedures
-
-The goal is not to build code.
-
-The goal is to answer:
-
-> "If 10 million users arrive at once, what breaks first, why does it break, how much does it cost, and how do we prevent it?"
+| Document | Description |
+|-----------|-------------|
+| FAILURE-CASCADE.md | Full failure cascade analysis including RPS calculations, bottlenecks, failure triggers, and incident timeline |
+| ARCHITECTURE.md | Redesigned scalable architecture with CDN, Redis, ALB, PgBouncer, Read Replicas, and SQS |
+| COST-ESTIMATE.md | AWS infrastructure pricing with baseline and peak-event calculations |
+| RUNBOOK.md | Production incident response guide with alarms, triage, recovery, rollback, and postmortem process |
 
 ---
 
-## Scenario Overview
+# 🏗 Architecture Overview
 
-### Existing Production System
+## Existing Monolith
 
 ```text
 Users
   │
   ▼
-Node.js Express
-(1 CPU, 4GB RAM)
+Node.js
   │
   ▼
 PostgreSQL
-(max_connections = 100)
 ```
 
-Characteristics:
+Problems:
 
-- Single Node.js process
-- Single PostgreSQL instance
-- No Redis
+- Single point of failure
+- No horizontal scaling
+- No caching
+- No connection pooling
+- No async processing
 - No CDN
-- No Load Balancer
-- No Auto Scaling
-- Synchronous payment processing
-- Images served directly from application server
 
 ---
 
-## Traffic Simulation
-
-### Notification Blast
+## Redesigned Architecture
 
 ```text
-Notification recipients      = 180,000,000
-CTR                           = 8%
-
-Users opening app            = 14,400,000
-```
-
-### API Activity
-
-Each user performs:
-
-1. Browse restaurants
-2. Open restaurant
-3. Place order
-
-```text
-3 API calls/user
-```
-
-### Peak RPS
-
-```text
-Peak RPS =
-(10,000,000 × 3) / 60
-
-= 500,000 requests/sec
-```
-
----
-
-## Key Findings
-
-### 1. PostgreSQL Dies First
-
-```text
-max_connections = 100
-```
-
-Synchronous payment calls hold database connections for up to:
-
-```text
-200ms – 2000ms
-```
-
-Connection pool exhaustion occurs within seconds.
-
----
-
-### 2. Node.js Is Asked To Handle 41× Capacity
-
-```text
-Node capacity ≈ 12,000 RPS
-
-Traffic demand ≈ 500,000 RPS
-```
-
-Result:
-
-```text
-500,000 / 12,000
-
-≈ 41x overload
-```
-
----
-
-### 3. Payment Calls Amplify Failure
-
-Every payment request:
-
-```text
-DB connection
-    +
-External API wait
-```
-
-This dramatically increases connection hold time and exhausts PostgreSQL far earlier than expected.
-
----
-
-### 4. Promo Code Logic Overspends Budget
-
-Classic race condition:
-
-```text
-SELECT promo
-UPDATE promo
-```
-
-Under massive concurrency:
-
-```text
-Millions validated
-Before first updates commit
-```
-
-Result:
-
-- Oversold discounts
-- Revenue loss
-- Customer disputes
-
----
-
-### 5. Images Alone Can Kill The Server
-
-```text
-10M users
-× 20 images
-× 200 KB
-```
-
-≈ 40 TB of transfer in one minute.
-
-Without a CDN:
-
-```text
-Node.js NIC saturates
-Before APIs finish loading
-```
-
----
-
-## Documents Included
-
-| Document | Description |
-|-----------|-------------|
-| FAILURE-CASCADE.md | Complete incident simulation with traffic math, component limits, trigger points, and timeline |
-| ARCHITECTURE.md | Redesigned multi-tier architecture capable of handling event-scale traffic |
-| COST-ESTIMATE.md | AWS pricing model including baseline and World Cup peak scaling |
-| RUNBOOK.md | Production incident runbook for on-call engineers |
-
----
-
-## Architecture Overview
-
-The redesigned platform introduces:
-
-```text
+Users
+  │
+  ▼
 CloudFront CDN
-        │
-        ▼
+  │
+  ▼
 Application Load Balancer
-        │
-        ▼
-Node.js Auto-Scaling Fleet
-        │
-        ▼
-Redis Cluster
-        │
-        ▼
-PgBouncer
-        │
-        ▼
+  │
+  ▼
+Auto Scaling Node.js Fleet
+  │
+  ├─────────────┐
+  ▼             ▼
+Redis       SQS Queue
+  │             │
+  ▼             ▼
+PgBouncer   Payment Workers
+  │
+  ▼
 PostgreSQL Primary
-        │
-        ├── Read Replica 1
-        └── Read Replica 2
-
-SQS Payment Queue
-        │
-        ▼
-Payment Workers
-```
-
-### What Changes?
-
-| Problem | Solution |
-|----------|----------|
-| Image traffic overload | CloudFront CDN |
-| Single server failure | Load Balancer + Auto Scaling |
-| DB connection exhaustion | Redis + PgBouncer |
-| Payment latency | SQS asynchronous processing |
-| Read/write contention | PostgreSQL replicas |
-| Promo race condition | Redis atomic locking |
-
----
-
-## Cost Summary
-
-### Baseline Infrastructure
-
-Approximate monthly cost:
-
-```text
-~$1,024/month
-```
-
-Includes:
-
-- EC2
-- RDS
-- Read Replicas
-- Redis Cluster
-- CloudFront
-- ALB
-- SQS
-
----
-
-### Peak Event Scaling
-
-Additional cost for a 4-hour World Cup Final event:
-
-```text
-~$455
+  │
+  ├── Read Replica 1
+  └── Read Replica 2
 ```
 
 ---
 
-### Cost vs Outage
+# 🔧 Components Introduced
 
-Estimated business loss:
+| Component | Purpose |
+|------------|----------|
+| CloudFront | Offloads static assets and images |
+| ALB | Load balancing and health checks |
+| Auto Scaling | Dynamic capacity during traffic spikes |
+| Redis | Menu caching and promo locking |
+| PgBouncer | Database connection pooling |
+| PostgreSQL Replicas | Read scaling |
+| SQS | Asynchronous payment processing |
+| Payment Workers | Background payment execution |
+
+---
+
+# 💰 Cost Summary
+
+## Baseline Infrastructure
+
+| Service | Monthly Cost |
+|----------|--------------|
+| EC2 Fleet | $119 |
+| PostgreSQL Primary | $131 |
+| Read Replicas | $262 |
+| Redis Cluster | $358 |
+| ALB | $56 |
+| CloudFront | $85 |
+| SQS | $12 |
+| **Total** | **~$1,024/month** |
+
+---
+
+## World Cup Final Scaling
+
+Additional 4-hour event cost:
 
 ```text
-₹4.2 crore/minute
+≈ $455
+```
+
+---
+
+## Business Justification
+
+Revenue loss estimate:
+
+```text
+₹4.2 Crore / Minute
 ```
 
 45-minute outage:
 
 ```text
-₹189 crore
+₹189 Crore
 ```
 
-Infrastructure cost:
+Infrastructure investment:
 
 ```text
-~$1,024/month
+~$1,024 / Month
 ```
 
-Conclusion:
+The cost of prevention is insignificant compared to the cost of downtime.
+
+---
+
+# 📋 Incident Response
+
+The repository includes a complete operational runbook covering:
+
+- Alert thresholds
+- Incident detection
+- Triage decision tree
+- Component-specific remediation
+- Rollback procedures
+- Postmortem template
+
+Designed for:
 
 ```text
-Infrastructure is dramatically cheaper
-than downtime.
+Junior Engineers
+On-Call Engineers
+SRE Teams
+DevOps Teams
+Platform Engineers
 ```
 
 ---
 
-## Technologies Covered
+# 🛠 Technologies Covered
 
-### Application Layer
+### Backend
 
 - Node.js
 - Express.js
 
-### Data Layer
+### Database
 
 - PostgreSQL
 - Read Replicas
 - PgBouncer
 
-### Cache Layer
+### Caching
 
 - Redis
 - ElastiCache
@@ -344,66 +405,77 @@ than downtime.
 
 ### Infrastructure
 
-- EC2
-- ALB
-- CloudFront
-- CloudWatch
-- Auto Scaling Groups
+- AWS EC2
+- AWS ALB
+- AWS CloudFront
+- AWS CloudWatch
+- AWS Auto Scaling
 
 ### Reliability Engineering
 
 - Capacity Planning
-- Failure Analysis
 - Incident Response
-- Cost Optimization
+- Failure Analysis
 - Runbook Design
+- Cost Optimization
 
 ---
 
-## Expected Learning Outcomes
+# 🎓 Learning Outcomes
 
-After reading this repository you should be able to:
+After studying this repository you will understand:
 
-- Calculate peak traffic loads
-- Predict failure cascades
-- Identify infrastructure bottlenecks
-- Design scalable distributed systems
-- Estimate AWS operating costs
-- Write production-grade runbooks
-- Justify architecture decisions with numbers
+- How to calculate system capacity limits
+- How bottlenecks create cascading failures
+- How to scale Node.js applications
+- How to scale PostgreSQL databases
+- How Redis reduces database load
+- How asynchronous systems improve reliability
+- How to estimate AWS infrastructure costs
+- How to write production-grade runbooks
 
 ---
 
-## Final Takeaway
+# 🚀 Final Takeaway
 
-The most important lesson is:
+The most important lesson from this project is:
 
-> Systems do not fail randomly. They fail at their bottlenecks.
+> **Systems do not fail randomly. They fail at their bottlenecks.**
 
 In this scenario:
 
 ```text
-100 PostgreSQL connections
+100 PostgreSQL Connections
 +
-Synchronous payment calls
+Synchronous Payment Calls
 +
-500,000 RPS demand
+500,000 RPS
 ```
 
-creates an unavoidable cascade:
+creates an unavoidable failure cascade:
 
 ```text
-DB Pool Exhaustion
-        ↓
+Database Pool Exhaustion
+          ↓
 Request Queueing
-        ↓
-Node Saturation
-        ↓
+          ↓
+Node.js Saturation
+          ↓
 Timeouts
-        ↓
-Process Crash
-        ↓
+          ↓
+Application Crash
+          ↓
 Revenue Loss
 ```
 
-The redesigned architecture removes each bottleneck individually and replaces a fragile monolith with a resilient, horizontally scalable platform capable of surviving major sporting-event traffic spikes.
+The redesigned architecture removes each bottleneck individually and transforms a fragile monolith into a resilient, scalable platform capable of handling major sporting-event traffic surges.
+
+---
+
+<div align="center">
+
+### ⭐ If you found this project useful, consider starring the repository.
+
+Built with System Design, SRE, Scalability Engineering, and Production Reliability principles.
+
+</div>
